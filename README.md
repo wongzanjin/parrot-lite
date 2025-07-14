@@ -67,7 +67,7 @@ The UDP message consists of the following fields
 2. Message Flags (1) - Several bitwise fields defined as follows
 
    | 7 (LSB)   | 6        | 5      | 4       | 3      | 2       | 1        | 0 (LSB)   |
-             |-----------|----------|--------|---------|--------|---------|----------|-----------|
+   |-----------|----------|--------|---------|--------|---------|----------|-----------|
    | version1  | version2 | DEVICE | COMMAND | SERIAL | PAYLOAD | CHECKSUM | reserved  |
    | Must be 0 | Must be1 | Flag   | Flag    | Flag   | Flag    | Flag     | Must be 0 |
 
