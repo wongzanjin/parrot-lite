@@ -73,29 +73,7 @@ parrot_bool parrot_message_parse(parrot_message *msg, const void *data, const ui
 
     PARSE_OPTIONAL_VARINT(command_flag, command)
     PARSE_OPTIONAL_VARINT(serial_flag, serial)
-    // PARSE_OPTIONAL_VARINT(payload_flag, length)
-
-    if (payload_flag != 0) {
-        if (pos + 1 > length) {
-            parrot_error_len = __builtin___snprintf_chk(parrot_error_data, sizeof(parrot_error_data) - 1, 0,
-                                                        __builtin_object_size(parrot_error_data, 2 > 1 ? 1 : 0),
-                                                        "data too short");
-            return 0;
-        }
-        const uint8_t lower_byte = bytes[pos++];
-        msg->payload_len = lower_byte & 0x7F;
-        if (lower_byte & 0x80) {
-            if (pos + 1 > length) {
-                parrot_error_len = __builtin___snprintf_chk(parrot_error_data, sizeof(parrot_error_data) - 1, 0,
-                                                            __builtin_object_size(parrot_error_data, 2 > 1 ? 1 : 0),
-                                                            "data too short");
-                return 0;
-            }
-            const uint8_t higher_byte = bytes[pos++];
-            msg->payload_len |= higher_byte << 7;
-        }
-    }
-
+    PARSE_OPTIONAL_VARINT(payload_flag, payload_len)
 
     if (msg->payload_len != 0) {
         REQUIRE_MORE_BYTES(msg->payload_len)
