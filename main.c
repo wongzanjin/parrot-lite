@@ -28,11 +28,14 @@ static int exit_value = 0;
 
 int create_udp_socket(int local_port);
 int connect_udp_socket();
-void send_login();
+void send_register_request();
 void read_udp_messages();
 void routine_check();
 
-void on_interrupt(int signal) {
+void on_interrupt(const int sig) {
+    (void*)sig;
+
+
     exit_flag = 1;
 }
 
@@ -65,7 +68,7 @@ int main(const int argc, char *argv[]) {
 
     // event loop
     time_t last_check_time = time(NULL);
-    send_login(); // send login request
+    send_register_request();
     while (!exit_flag) {
         fd_set read_fds;
         struct timeval timeout;
@@ -93,7 +96,7 @@ void send_keep_alive() {
     printf("send keep alive\n");
     parrot_message msg;
     memset(&msg, 0, sizeof(parrot_message));
-    msg.command = 0x03; // Login request
+    msg.command = 0x03; // Keep-alive request
     msg.device = device_id;
     msg.serial = ++serial;
 
@@ -107,7 +110,7 @@ void send_keep_alive() {
 
 void routine_check() {
     if (!is_logged_in) {
-        send_login();
+        send_register_request();
     } else {
         const time_t now = time(NULL);
         if (now > last_keep_alive_time + 30) {
@@ -139,7 +142,7 @@ static void on_audio_notify(const void *payload, const uint16_t len) {
     }
 }
 
-static void on_status_notify(const void *payload, uint16_t len) {
+static void on_status_notify(const void *payload, const uint16_t len) {
     payload_parse parse;
     parrot_payload_parse_init(&parse, payload, len);
 
@@ -189,7 +192,7 @@ static void on_register_res(const void *payload, const uint16_t len) {
     printf("Register status=%d message=%.*s\n", code, message_len, message_data);
     is_logged_in = parrot_true;
 }
-static void handle_udp_message(const void *data, int length) {
+static void handle_udp_message(const void *data, const int length) {
     parrot_message msg;
     const parrot_bool ok = parrot_message_parse(&msg, data, length);
     if (!ok) {
@@ -246,7 +249,7 @@ void read_udp_messages() {
     }
 }
 
-void send_login() {
+void send_register_request() {
     c_string payload;
     memset(&payload, 0, sizeof(payload));
     // field #1 client_ip       (string)
@@ -256,12 +259,10 @@ void send_login() {
     parrot_payload_put_string(&payload, 2, "1.0.1", -1);
     parrot_payload_put_integer(&payload, 3, 100);
 
-
-
-    printf("send login request\n");
+    printf("send register request\n");
     parrot_message msg;
     memset(&msg, 0, sizeof(parrot_message));
-    msg.command = 0x01; // Login request
+    msg.command = 0x01; // Register request
     msg.device = device_id;
     msg.serial = ++serial;
     msg.payload_data = payload.data;

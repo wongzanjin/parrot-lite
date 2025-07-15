@@ -7,6 +7,11 @@
 static char parrot_error_data[1024] = "";
 static uint16_t parrot_error_len = 0;
 
+#define PARROT_RETURN_FAIL(fmt, ...) { \
+    parrot_error_len = snprintf(parrot_error_data, sizeof(parrot_error_data), fmt, ##__VA_ARGS__); \
+    return parrot_false; \
+    }
+
 c_string parrot_get_last_error() {
     const c_string ret = {
         .data = parrot_error_data,
@@ -16,29 +21,77 @@ c_string parrot_get_last_error() {
     return ret;
 }
 
+typedef struct parrot_parse_buf {
+    const uint8_t *bytes;
+    uint16_t pos;
+    uint16_t len;
+} parrot_parse_buf;
+
+static parrot_bool parrot_parse_buf_get_byte(parrot_parse_buf *buf, uint8_t *out_value_ptr) {
+    if (buf->pos >= buf->len) {
+        return parrot_false;
+    }
+
+    *out_value_ptr = buf->bytes[buf->pos++];
+    return parrot_true;
+}
+
+static parrot_bool parrot_parse_buf_get_uint32(parrot_parse_buf *buf, uint32_t *out_value_ptr) {
+    if (buf->pos + 4 > buf->len) {
+        return parrot_false;
+    }
+
+    *out_value_ptr = ntohl(*((uint32_t *) (buf->bytes + buf->pos)));
+    buf->pos += 4;
+    return parrot_true;
+}
+
+static parrot_bool parrot_parse_buf_get_uint16(parrot_parse_buf *buf, uint16_t *out_value_ptr) {
+    if (buf->pos + 2 > buf->len) {
+        return parrot_false;
+    }
+    *out_value_ptr = ntohs(*((uint16_t *) (buf->bytes + buf->pos)));
+    buf->pos += 2;
+    return parrot_true;
+}
+
+static parrot_bool parrot_parse_buf_get_varint(parrot_parse_buf *buf, uint16_t *out_value_ptr) {
+    if (buf->pos + 1 > buf->len) {
+        return parrot_false;
+    }
+    const uint8_t lower_byte = buf->bytes[buf->pos++];
+    *out_value_ptr = lower_byte & 0x7F;
+    if (lower_byte & 0x80) {
+        if (buf->pos + 1 > buf->len) {
+            return parrot_false;
+        }
+
+        const uint8_t higher_byte = buf->bytes[buf->pos++];
+        *out_value_ptr |= higher_byte << 7;
+    }
+    return parrot_true;
+}
+
+
 parrot_bool parrot_message_parse(parrot_message *msg, const void *data, const uint16_t length) {
-    uint16_t pos = 0;
-    const uint8_t *bytes = data;
+    parrot_parse_buf buf = {
+        .bytes = data,
+        .pos = 0,
+        .len = length
+    };
 
     memset(msg, 0, sizeof(parrot_message));
 
-#define REQUIRE_MORE_BYTES(n) if (pos + n > length) { \
-        parrot_error_len = snprintf(parrot_error_data, sizeof(parrot_error_data) - 1, "data too short"); \
-        return parrot_false; \
-    }
+    uint8_t magic = 0;
+    if (!parrot_parse_buf_get_byte(&buf, &magic)) PARROT_RETURN_FAIL("data too short")
 
-    REQUIRE_MORE_BYTES(2)
-    const uint8_t magic = bytes[pos++];
-    if (magic != 0xFF) {
-        parrot_error_len = snprintf(parrot_error_data, sizeof(parrot_error_data), "bad magic number");
-        return parrot_false;
-    }
+    if (magic != 0xFF) PARROT_RETURN_FAIL("bad invalid magic");
 
-    const uint8_t flags = bytes[pos++];
-    if (flags >> 6 != 1) {
-        parrot_error_len = snprintf(parrot_error_data, sizeof(parrot_error_data), "bad version number");
-        return parrot_false;
-    }
+    uint8_t flags = 0;
+    if (!parrot_parse_buf_get_byte(&buf, &flags)) PARROT_RETURN_FAIL("data too short");
+
+    // version flags
+    if (flags >> 6 != 1) PARROT_RETURN_FAIL("bad version number");
 
     // device
     const uint8_t device_flag = flags & 0x20;
@@ -47,17 +100,10 @@ parrot_bool parrot_message_parse(parrot_message *msg, const void *data, const ui
     const uint8_t payload_flag = flags & 0x04;
     const uint8_t checksum_flag = flags & 0x02;
     const uint8_t reserved_flag = flags & 0x01;
-    if (reserved_flag != 0) {
-        parrot_error_len = snprintf(parrot_error_data, sizeof(parrot_error_data), "bad reserved flag");
-        return parrot_false;
-    }
+    if (reserved_flag != 0) PARROT_RETURN_FAIL("bad reserved flag");
 
     if (device_flag != 0) {
-        REQUIRE_MORE_BYTES(4)
-
-        uint32_t *device_ptr = (uint32_t*) (bytes + pos);
-        msg->device = ntohl(*device_ptr);
-        pos += 4;
+        if (!parrot_parse_buf_get_uint32(&buf, &msg->device)) PARROT_RETURN_FAIL("data too short");
     }
 
 #define PARSE_OPTIONAL_VARINT(option_flag, msg_field) if (option_flag != 0) { \
@@ -71,43 +117,41 @@ parrot_bool parrot_message_parse(parrot_message *msg, const void *data, const ui
         } \
     }
 
-    PARSE_OPTIONAL_VARINT(command_flag, command)
-    PARSE_OPTIONAL_VARINT(serial_flag, serial)
-    PARSE_OPTIONAL_VARINT(payload_flag, payload_len)
+    if (command_flag) {
+        if (!parrot_parse_buf_get_varint(&buf, &msg->command)) PARROT_RETURN_FAIL("data too short");
+    }
+
+    if (serial_flag) {
+        if (!parrot_parse_buf_get_varint(&buf, &msg->serial)) PARROT_RETURN_FAIL("data too short");
+    }
+
+    if (payload_flag) {
+        if (!parrot_parse_buf_get_varint(&buf, &msg->payload_len)) PARROT_RETURN_FAIL("data too short");
+    }
 
     if (msg->payload_len != 0) {
-        REQUIRE_MORE_BYTES(msg->payload_len)
+        if (buf.pos + msg->payload_len > buf.len) PARROT_RETURN_FAIL("data too short");
 
-        msg->payload_data = (void*) (bytes + pos);
-        pos += msg->payload_len;
+        msg->payload_data = (void*) (buf.bytes + buf.pos);
+        buf.pos += msg->payload_len;
     } else {
         msg->payload_data = "";
     }
 
     if (checksum_flag != 0) {
-        REQUIRE_MORE_BYTES(2)
-        const uint16_t *checksum_ptr = (uint16_t*) (bytes + pos);
-        const uint16_t checksum = ntohs(*checksum_ptr);
+        uint16_t checksum = 0;
+        if (!parrot_parse_buf_get_uint16(&buf, &checksum)) PARROT_RETURN_FAIL("data too short");
 
         uint16_t actual_checksum = 0;
-        for (uint16_t i = 0; i < pos; i++) {
-            actual_checksum += bytes[i];
+        for (uint16_t i = 0; i < buf.pos - 2; i++) {
+            actual_checksum += buf.bytes[i];
         }
 
-        if (checksum != actual_checksum) {
-            parrot_error_len = snprintf(parrot_error_data, sizeof(parrot_error_data),
-                                        "checksum mismatch. expected %02x, actual %02x", checksum, actual_checksum);
-            return parrot_false;
-        }
-
-        pos += 2;
+        if (checksum != actual_checksum) PARROT_RETURN_FAIL("checksum mismatch. expected %02x, actual %02x", checksum,
+                                                            actual_checksum);
     }
 
-    if (pos < length) {
-        parrot_error_len = snprintf(parrot_error_data, sizeof(parrot_error_data),
-                                    "data too long");
-        return parrot_false;
-    }
+    if (buf.pos < length) PARROT_RETURN_FAIL("data too long");
 
     return parrot_true;
 }
@@ -128,15 +172,29 @@ static uint16_t checksum_size(const parrot_bool add_checksum) {
     return add_checksum ? 2 : 0;
 }
 
+
+static uint16_t serialize_varint(uint8_t *buffer, const uint16_t value) {
+    if (value == 0) {
+        return 0;
+    }
+
+    buffer[0] = value & 0x7F;
+    if (value > 127) {
+        buffer[0] |= 0x80;
+        buffer[1] = value >> 7;
+        return 2;
+    }
+
+    buffer[0] = value;
+    return 1;
+}
+
 uint16_t parrot_message_serialize(void *buf, uint16_t size, const parrot_message *msg,
-                                   const parrot_bool add_checksum) {
+                                  const parrot_bool add_checksum) {
     uint16_t pos = 0;
     uint8_t *bytes = buf;
 
-    if (msg->payload_len > 500) {
-        parrot_error_len = snprintf(parrot_error_data, sizeof(parrot_error_data), "msg payload too long");
-        return parrot_false;
-    }
+    if (msg->payload_len > 500) PARROT_RETURN_FAIL("msg payload too long")
 
     const uint16_t required_size = 2 // magic + flags
         + device_size(msg->device) // device
@@ -145,10 +203,7 @@ uint16_t parrot_message_serialize(void *buf, uint16_t size, const parrot_message
         + var_int2_size(msg->payload_len)
         + checksum_size(add_checksum)
         + msg->payload_len;
-    if (size < required_size) {
-        parrot_error_len = snprintf(parrot_error_data, sizeof(parrot_error_data), "buffer too small");
-        return parrot_false;
-    }
+    if (size < required_size) PARROT_RETURN_FAIL("buffer too small")
 
     memset(buf, 0, size);
     bytes[pos++] = 0xFF;
@@ -166,20 +221,10 @@ uint16_t parrot_message_serialize(void *buf, uint16_t size, const parrot_message
         pos += 4;
     }
 
-#define SERIALIZE_VARINT(msg_field) \
-    if (msg->msg_field) { \
-        bytes[pos] = msg->msg_field & 0x7F; \
-        if (msg->msg_field > 127) { \
-            bytes[pos++] |= 0x80; \
-            bytes[pos++] |= msg->msg_field >> 7; \
-        } else { \
-            ++pos; \
-        } \
-    }
+    pos += serialize_varint(bytes + pos, msg->command);
+    pos += serialize_varint(bytes + pos, msg->serial);
+    pos += serialize_varint(bytes + pos, msg->payload_len);
 
-    SERIALIZE_VARINT(command)
-    SERIALIZE_VARINT(serial)
-    SERIALIZE_VARINT(payload_len)
     if (msg->payload_len) {
         memcpy(bytes + pos, msg->payload_data, msg->payload_len);
         pos += msg->payload_len;
