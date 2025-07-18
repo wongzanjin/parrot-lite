@@ -33,8 +33,7 @@ void read_udp_messages();
 void routine_check();
 
 void on_interrupt(const int sig) {
-    (void*)sig;
-
+    (void)sig;
 
     exit_flag = 1;
 }
@@ -142,6 +141,27 @@ static void on_audio_notify(const void *payload, const uint16_t len) {
     }
 }
 
+static void on_volume_notify(const void *payload, const uint16_t len) {
+    payload_parse parse;
+    parrot_payload_parse_init(&parse, payload, len);
+
+    payload_entry entry;
+
+    int audio_dev_id = 0;
+    int volume = 0;
+
+
+    while (parse.pos < parse.length) {
+        if (!parrot_payload_parse_entry(&entry, &parse))
+            break;
+
+        if (entry.key == 1) audio_dev_id = (int) entry.value.i64;
+        if (entry.key == 2) volume = (int) entry.value.i64;
+    }
+
+    printf("volume notify id=%d value=%d\n", audio_dev_id, volume);
+}
+
 static void on_status_notify(const void *payload, const uint16_t len) {
     payload_parse parse;
     parrot_payload_parse_init(&parse, payload, len);
@@ -192,6 +212,7 @@ static void on_register_res(const void *payload, const uint16_t len) {
     printf("Register status=%d message=%.*s\n", code, message_len, message_data);
     is_logged_in = parrot_true;
 }
+
 static void handle_udp_message(const void *data, const int length) {
     parrot_message msg;
     const parrot_bool ok = parrot_message_parse(&msg, data, length);
@@ -218,6 +239,10 @@ static void handle_udp_message(const void *data, const int length) {
             break;
         case 0x43:
             printf("stop play notify\n");
+            break;
+        case 0x44:
+            on_volume_notify(msg.payload_data, msg.payload_len);
+            break;
         default:
             break;
     }

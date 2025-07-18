@@ -323,6 +323,8 @@ void parse_parrot_payload(const void *payload_data, const uint16_t payload_lengt
 | 0x41    | Audio packet         | C <=S     | Audio data to play, usually encoded in Opus                  |
 | 0x42    | Start play notify    | C <=S     | Notifies the client device to start playback <br/>(Client should open the amplifier) |
 | 0x43    | Stop play notify     | C <=S     | Notifies the client device to start playback <br/>(Client may close the amplifier) |
+| 0x44    | Volume notification  | C <= S    | Notification is sent when a user modifies volume on server-side (WEB) |
+| 0x45    | Volume report        | C => S    | When playback volume is ajusted on device endpoint, the device should send this message to server to report it's volume change. |
 
 ## Register Request (0x01)
 
@@ -392,3 +394,58 @@ Payload Data
 | Key  | Field Name | Type   | Optional | Remarks                                                      |
 | ---- | ---------- | ------ | -------- | ------------------------------------------------------------ |
 | 1    | frame_data | string | N        | Opus encoded audio frame (20ms),  a single message payload can have multiple frames in it. |
+
+
+
+## Start playback Notification (0x42)
+
+No Payload is required.
+
+## Stop playback Notification (0x43)
+
+No Payload is required.
+
+## Volume Notification (0x44)
+
+| Key  | Field Name | Type    | Optional | Remarks                                                      |
+| ---- | ---------- | ------- | -------- | ------------------------------------------------------------ |
+| 1    | Device ID  | Integer | N        | 0 for input (recording), 1 for output (playback)<br>Always set to 1 for speaker devices |
+| 2    | Volume     | Integer | N        | The volume value in range [0, 100]                           |
+
+## Volume Report (0x45)
+
+| Key  | Field Name | Type    | Optional | Remarks                                                      |
+| ---- | ---------- | ------- | -------- | ------------------------------------------------------------ |
+| 1    | Device ID  | Integer | N        | 0 for input (recording), 1 for output (playback)<br>Always set to 1 for speaker devices |
+| 2    | Volume     | Integer | N        | The volume value in range [0, 100]                           |
+
+* Sample code
+
+```c++
+// when playback volume is ajusted on device endpoint
+// report the changed volume to server
+c_string payload;
+memset(&payload, 0, sizeof(payload));
+parrot_payload_put_integer(&payload, 1, 1 /* 1 for playback volume */);
+parrot_payload_put_integer(&payload, 2, 80 /* volume value */);
+
+parrot_message msg;
+memset(&msg, 0, sizeof(parrot_message));
+msg.command = 045; // Volume Report
+msg.device = device_id;
+msg.serial = ++serial;
+msg.payload_data = payload.data;
+msg.payload_len = payload.length;
+
+ char buf[512];
+// Serialize message to bytes
+const uint16_t n = parrot_message_serialize(buf, sizeof(buf), &msg, parrot_true);
+const ssize_t ret = send(sock, buf, n, 0);
+if (ret < 0) {
+   perror("send");
+}
+
+// Deallocate the memory during payload build
+c_string_hard_clear(&payload);
+```
+
